@@ -72,7 +72,7 @@ def set_ocp_options(ocp, ocp_opts):
 def export_linear_model(x, u, p):
     nx = x.shape[0]
     nu = u.shape[0]
-    np = p.shape[0]
+    nparam = p.shape[0]
 
     # linear dynamics for every stage
     A = SX.sym("A",nx,nx)
@@ -91,7 +91,7 @@ def export_linear_model(x, u, p):
         A.reshape((nx**2,1)),
         B.reshape((nx*nu,1)),
         w,
-        p
+        p # (P_vec, p_nom)
     )
 
     # acados model
@@ -105,7 +105,7 @@ def export_linear_model(x, u, p):
     # model.z = z
     model.p = p_lin
     # model.con_h_expr = con_h_expr
-    model.name = f"linear_model_with_params_nx{nx}_nu{nu}_np{np}"
+    model.name = f"linear_model_with_params_nx{nx}_nu{nu}_np{nparam}"
 
     return model
 
@@ -194,6 +194,41 @@ def vec2sym_mat(vec, nx):
 
     mat[i, j] = vec
     mat.T[i, j] = vec
+
+    return mat
+
+def sym_mat2vec_old(mat):
+    nx = mat.shape[0]
+
+    if isinstance(mat, np.ndarray):
+        vec = np.zeros((int((nx+1)*nx/2),))
+    else:
+        vec = cas.SX.zeros(int((nx+1)*nx/2))
+
+    start_mat = 0
+    for i in range(nx):
+        end_mat = start_mat + (nx - i)
+        vec[start_mat:end_mat] = mat[i:,i]
+        start_mat += (nx-i)
+
+    return vec
+
+
+def vec2sym_mat_old(vec, nx):
+    # nx = (vec.shape[0])
+
+    if isinstance(vec, np.ndarray):
+        mat = np.zeros((nx,nx))
+    else:
+        mat = cas.SX.zeros(nx,nx)
+
+    start_mat = 0
+    for i in range(nx):
+        end_mat = start_mat + (nx - i)
+        aux = vec[start_mat:end_mat]
+        mat[i,i:] = aux.T
+        mat[i:,i] = aux
+        start_mat += (nx-i)
 
     return mat
 
@@ -305,14 +340,18 @@ def generate_gp_funs(gp_model, covar_jac=False, B=None):
 def transform_ocp(ocp):
     nx = ocp.model.x.size()[0]
     nu = ocp.model.u.size()[0]
+    nparam = ocp.model.p.size()[0]
     nh = ocp.model.con_h_expr.shape[0]
 
     model_lin = export_linear_model(ocp.model.x, ocp.model.u, ocp.model.p)
-    # we replace the nonlinear constraint with linear
     model_lin.con_h_expr = ocp.model.con_h_expr
-
+    model_lin.cost_expr_ext_cost = ocp.model.cost_expr_ext_cost
+    model_lin.cost_expr_ext_cost_e = ocp.model.cost_expr_ext_cost_e
     ocp.model = model_lin
+
+    ocp_parameter_values = ocp.parameter_values
     ocp.parameter_values = np.zeros((model_lin.p.shape[0],))
+    ocp.parameter_values[-nparam:] = ocp_parameter_values
 
     ocp.solver_options.integrator_type = "DISCRETE"
     ocp.solver_options.nlp_solver_type = "SQP_RTI"
@@ -322,15 +361,56 @@ def P_propagation(P, A, B, W):
     #  P_i+1 = A P A^T +  B*W*B^T
     return A @ P @ A.T + B @ W @ B.T 
 
-def generate_h_tighten_jac_sig_from_h_tighten(h_tight, x, sig):
+def generate_h_tighten_jac_sig_from_h_tighten(h_tight, x, u, p, sig):
     # JIT options
     jit_options = {"flags": ["-O3"], "verbose": True}
     fun_options = {"jit": True, "compiler": "shell", "jit_options": jit_options}
 
     h_tighten_jac_sig = cas.jacobian(h_tight, sig)
-    h_tighten_jac_sig_fun = cas.Function("h_tighten_jac_sig", [x, sig], [h_tighten_jac_sig], fun_options)
+
+    p_sig = cas.vertcat(sig, p)
+    h_tighten_jac_sig_fun = cas.Function("h_tighten_jac_sig", [x, u, p_sig], [h_tighten_jac_sig], fun_options)
 
     return h_tighten_jac_sig_fun
+
+def generate_h_tightening_funs_SX(h, x, u, p, idh_tight):
+    """
+    h: cas.MX or cas.SX expression for contraints to be tightened depending on x
+    x: cas.MX or cas.SX variable
+    """
+    # JIT options
+    jit_options = {"flags": ["-O3"], "verbose": True}
+    fun_options = {"jit": True, "compiler": "shell", "jit_options": jit_options}
+
+    # dims
+    nx = x.shape[0]
+    nu = u.shape[0]
+    np = p.shape[0]
+    nh = h.shape[0]
+
+    # variables for uncertainty and gradients
+    sig_vec = cas.SX.sym('sig_vec', int((nx+1)*nx/2))
+    sig = vec2sym_mat_old(sig_vec, nx)
+
+    h_fun = cas.Function("h",[x,u,p],[h])
+    h_jac_x = cas.jacobian(h,x)
+
+    h_tighten_stack = cas.SX.zeros(nh,1)
+    for i in idh_tight:
+        h_tighten_stack[i,:] = cas.sqrt(cas.dot(h_jac_x[i,:] @ sig, h_jac_x[i,:]))
+
+    h_tighten_jac_x = cas.jacobian(h_tighten_stack, x)
+    h_tighten_jac_sig = cas.jacobian(h_tighten_stack, sig_vec)
+
+    p_sig = cas.vertcat(sig_vec, p)
+    print(f"Shapes p:{p.size()}, sig:{sig.size()}, p_sig:{p_sig.size()}")
+
+    h_jac_x_fun = cas.Function("h_jac_x",[x,u,p_sig],[h_jac_x],fun_options)
+    h_tighten_fun = cas.Function("h_tighten", [x,u,p_sig], [h_tighten_stack], fun_options)
+    h_tighten_jac_x_fun = cas.Function("h_tighten_jac_x", [x,u,p_sig], [h_tighten_jac_x], fun_options)
+    h_tighten_jac_sig_fun = cas.Function("h_tighten_jac_sig", [x,u,p_sig], [h_tighten_jac_sig], fun_options)
+
+    return h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun
 
 def propagate(P0, Afun, B, Wfun, y_all, N_sim):
     P_return = [np.zeros(P0.shape)] * (N_sim+1)

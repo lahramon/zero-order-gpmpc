@@ -1,12 +1,12 @@
+import os, sys
 import numpy as np
 import casadi as cas
 
 import torch
 import gpytorch
 
-from scipy.stats import norm
 from acados_template import AcadosOcp, AcadosSim, AcadosSimSolver, AcadosOcpSolver
-from zoro_acados_utils import *
+from .zoro_acados_utils import *
 
 from time import perf_counter
 from dataclasses import dataclass
@@ -21,7 +21,15 @@ class ZoroAcadosData:
     timings: dict
 
 class ZoroAcados():
-    def __init__(self, ocp, sim, prob_x, Sigma_x0, Sigma_W, B=None, gp_model=None, use_model_params=True, use_cython=True):
+    def __init__(self, ocp, sim, prob_x, Sigma_x0, Sigma_W, 
+        B=None, 
+        gp_model=None, 
+        use_model_params=True, 
+        use_cython=True, 
+        h_tightening_jac_sig_fun=None,
+        path_json_ocp="zoro_sim_solver_config.json",
+        path_json_sim="zoro_sim_solver_config.json"
+    ):
         """
         ocp: AcadosOcp for nominal problem
         sim: AcadosSim for nominal model
@@ -30,17 +38,16 @@ class ZoroAcados():
         # get dimensions
         nx = ocp.model.x.size()[0]
         nu = ocp.model.u.size()[0]
+        nparam = ocp.model.p.size()[0]
         N = ocp.dims.N
         T = ocp.solver_options.tf
 
         self.nx = nx
         self.nu = nu
-        self.np = np
+        self.nparam = nparam
+        self.nparam_model = nparam - int((self.nx+1)*self.nx/2)
         self.N = N
         self.T = T
-
-        # tightening
-        # self.prob_tighten = norm.ppf(prob_x)
 
         # constants
         if B is None:
@@ -65,21 +72,31 @@ class ZoroAcados():
         self.var = np.zeros((N,self.nw))
 
         # TODO: allow for more general model structures (other params than just vectorized covariances)
-        self.h_tightening_jac_sig_fun = generate_h_tighten_jac_sig_from_h_tighten(ocp.model.con_h_expr, ocp.model.x, ocp.model.p)
+        if h_tightening_jac_sig_fun is None:
+            # TODO: general solution (problem is concatenated paramteres in uncertain model, cannot compute jacobian w.r.t. subset of variables)
+            self.h_tightening_jac_sig_fun = generate_h_tighten_jac_sig_from_h_tighten(ocp.model.con_h_expr, ocp.model.x, ocp.model.u, ocp.model.p)
+        else:
+            self.h_tightening_jac_sig_fun = h_tightening_jac_sig_fun
 
         self.ocp = transform_ocp(ocp)
+        self.nparam_zoro = self.ocp.model.p.size()[0]
+        self.p_hat_model = np.zeros((N,self.nparam_model))
+        self.p_hat_model_with_Pvec = np.zeros((N+1,self.nparam))
+        self.p_hat_all = np.zeros((N,self.nparam_zoro))
+
+        self.p_hat_model_with_Pvec[0,:int((self.nx+1)*self.nx/2)] = self.P_bar_all_vec[0]
 
         if use_cython:
-            AcadosOcpSolver.generate(ocp, json_file = 'acados_ocp_' + ocp.model.name + '.json')
+            AcadosOcpSolver.generate(ocp, json_file = path_json_ocp)
             AcadosOcpSolver.build(ocp.code_export_directory, with_cython=True)
-            self.ocp_solver = AcadosOcpSolver.create_cython_solver('acados_ocp_' + ocp.model.name + '.json')
+            self.ocp_solver = AcadosOcpSolver.create_cython_solver(path_json_ocp)
 
-            AcadosSimSolver.generate(sim, json_file = 'acados_sim_' + ocp.model.name + '.json')
+            AcadosSimSolver.generate(sim, json_file = path_json_sim)
             AcadosSimSolver.build(sim.code_export_directory, with_cython=True)
-            self.sim_solver = AcadosSimSolver.create_cython_solver('acados_sim_' + ocp.model.name + '.json')
+            self.sim_solver = AcadosSimSolver.create_cython_solver(path_json_sim)
         else:
-            self.ocp_solver = AcadosOcpSolver(ocp, json_file = 'acados_ocp_' + ocp.model.name + '.json')
-            self.sim_solver = AcadosSimSolver(sim, json_file = 'acados_sim_' + ocp.model.name + '.json')
+            self.ocp_solver = AcadosOcpSolver(ocp, json_file = path_json_ocp)
+            self.sim_solver = AcadosSimSolver(sim, json_file = path_json_sim)
         
         if gp_model is None:
             self.has_gp_model = False
@@ -123,6 +140,8 @@ class ZoroAcados():
 
         nx = self.nx
         nu = self.nu
+        nparam = self.nparam
+        nparam_zoro = self.nparam_zoro
         nw = self.nw
         N = self.N
 
@@ -143,22 +162,23 @@ class ZoroAcados():
             self.solve_stats["timings"]["query_nodes"][i] += perf_counter() - time_query_nodes
             
             # ------------------- GP Sensitivities --------------------
-            torch.cuda.synchronize()
             time_get_gp_sensitivities = perf_counter()
 
             if self.has_gp_model:
+                torch.cuda.synchronize()
                 self.mean, self.mean_dy, self.var = self.gp_sensitivities(self.y_hat_all)
+                torch.cuda.synchronize()
 
-            torch.cuda.synchronize()
             self.solve_stats["timings"]["get_gp_sensitivities"][i] += perf_counter() - time_get_gp_sensitivities
             
             # ------------------- Update stages --------------------
-            for stage in range(N):
+            for stage in range(self.N):
                 # set parameters (linear matrices and offset)
                 # ------------------- Integrate --------------------
                 time_integrate_set = perf_counter()
                 self.sim_solver.set("x", self.x_hat_all[stage,:])
                 self.sim_solver.set("u", self.u_hat_all[stage,:])
+                self.sim_solver.set("p", self.p_hat_model_with_Pvec[stage,:])
                 self.solve_stats["timings"]["integrate_set"][i] += perf_counter() - time_integrate_set
 
                 time_integrate_acados_python = perf_counter()
@@ -197,9 +217,10 @@ class ZoroAcados():
                 
                 self.P_bar_old_vec = self.P_bar_all_vec[stage+1] # used in next iter
                 self.P_bar_all_vec[stage+1] = sym_mat2vec(self.P_bar_all[stage+1])
-                
+                self.p_hat_model_with_Pvec[stage+1,:int((self.nx+1)*self.nx/2)] = self.P_bar_all_vec[stage+1]
+
                 self.solve_stats["timings"]["propagate_covar"][i] += perf_counter() - time_propagate_covar
-                
+
                 # ------------------- Set sensitivities --------------------
                 time_set_sensitivities_reshape = perf_counter()
 
@@ -209,29 +230,35 @@ class ZoroAcados():
                 self.solve_stats["timings"]["set_sensitivities_reshape"][i] += perf_counter() - time_set_sensitivities_reshape
                 time_set_sensitivities = perf_counter()
 
-                self.ocp_solver.set(stage, "p", np.hstack((
+                self.p_hat_all[stage,:] = np.hstack((
                     A_reshape,
                     B_reshape,
                     f_hat,
-                    self.P_bar_all_vec[stage]
-                )))
-
+                    self.P_bar_all_vec[stage],
+                    self.p_hat_model[stage,:]
+                ))
+                self.ocp_solver.set(stage, "p", self.p_hat_all[stage,:])
                 self.solve_stats["timings"]["set_sensitivities"][i] += perf_counter() - time_set_sensitivities
 
                 # ------------------- Compute back off --------------------
                 time_get_backoffs = perf_counter()
 
                 time_get_backoffs_htj_sig = perf_counter()
-                htj_sig = self.h_tightening_jac_sig_fun(self.x_hat_all[stage,:], self.P_bar_all_vec[stage])          
+                p_sig = np.hstack((
+                    self.P_bar_all_vec[stage], 
+                    self.p_hat_model[i,:]
+                ))
+                htj_sig = self.h_tightening_jac_sig_fun(self.x_hat_all[stage,:], self.u_hat_all[stage,:], p_sig)          
                 self.solve_stats["timings"]["get_backoffs_htj_sig"][i] += perf_counter() - time_get_backoffs_htj_sig
                 
                 time_get_backoffs_htj_sig_matmul = perf_counter()
                 htj_sig_matmul = htj_sig @ dP_bar_vec         
                 self.solve_stats["timings"]["get_backoffs_htj_sig_matmul"][i] += perf_counter() - time_get_backoffs_htj_sig_matmul
-                
+
                 time_get_backoffs_add = perf_counter()
                 tightening = htj_sig_matmul
-                lh = self.ocp.constraints.lh + tightening
+
+                lh = cas.DM(self.ocp.constraints.lh) + tightening 
 
                 time_now = perf_counter()
                 self.solve_stats["timings"]["get_backoffs_add"][i] = time_now - time_get_backoffs_add
@@ -241,9 +268,6 @@ class ZoroAcados():
                 time_set_tightening = perf_counter()
 
                 # set constraints
-                # t_set_C = self.ocp_solver.constraints_set(stage,"C",h_sum_jac.full(),api="new")
-                # t_set_lg = self.ocp_solver.constraints_set(stage,"lg",lg.full().flatten())
-                # t_set_ug = self.ocp_solver.constraints_set(stage,"ug",ug.full().flatten())
                 self.ocp_solver.constraints_set(stage,"lh",lh.full().flatten())
 
                 self.solve_stats["timings"]["set_tightening"][i] += perf_counter() - time_set_tightening
@@ -284,6 +308,11 @@ class ZoroAcados():
         
         self.solve_stats["n_iter"] = i + 1
         self.solve_stats["timings_total"] = perf_counter() - time_total
+
+    def set_model_params(self, i, p_model):
+        self.p_hat_model[i,:] = p_model
+        self.p_hat_model_with_Pvec[i,-self.nparam_model:] = p_model
+        # print(f"Set model params (i={i}): p_hat_model={self.p_hat_model[i,:]},\nwith_Pvec={self.p_hat_model_with_Pvec[i,:]}")
 
     def get_solution(self):
         X = np.zeros((self.N+1, self.nx))

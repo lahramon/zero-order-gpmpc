@@ -241,7 +241,7 @@ def add_gp_plot(gp_data: GPlotData, ax, idx_out,
         (gp_data.conf_lower_on_path is not None):
         upper = gp_data.conf_upper_on_path[:, idx_out]
         lower = gp_data.conf_lower_on_path[:, idx_out]
-        y_plot_fill = ax.fill_between(x_plot, lower, upper, alpha=0.5, color=color)
+        y_plot_fill = ax.fill_between(x_plot, lower, upper, alpha=0.3, color=color)
         
     # plot samples
     if gp_data.sample_on_path is not None:
