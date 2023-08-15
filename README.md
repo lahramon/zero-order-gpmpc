@@ -1,8 +1,12 @@
 # Zero-Order GP-MPC
 
+> WORK-IN-PROGRESS: The repository is currently being set up and might not be functional!
+
 A high-performance implementation of a tailored SQP method for learning-based model predictive control with ellipsoidal uncertainties,
 - using the `acados` Python interface to solve the optimal control problems, and
 - employing `PyTorch` to evaluate learning-based dynamics models with support for GPU acceleration.
+
+## Background
 
 This software is built upon the results of the article "Zero-Order Optimization for Gaussian Process-based Model Predictive Control", published in the ECC 2023 Special Issue of the European Journal of Control (EJC), available at https://www.sciencedirect.com/science/article/pii/S0947358023000912. The code for the numerical experiments in the publication can be found [here](https://gitlab.ethz.ch/ics/zero-order-gp-mpc).
 
