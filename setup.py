@@ -9,9 +9,8 @@ setup(
     version='0.0.1',
     author='Amon Lahr',
     author_email='amlahr@ethz.ch',
-    description='A short description of your package',
+    description='A tailored SQP algorithm for learning-based model predictive control with ellipsoidal uncertainties',
     packages = find_packages(),
-    # package_dir={'zero_order_gpmpc': 'src'},
     install_requires=[
         'gpytorch',
         'tqdm',
