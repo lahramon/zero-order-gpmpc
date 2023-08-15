@@ -12,7 +12,6 @@ setup(
     description='A tailored SQP algorithm for learning-based model predictive control with ellipsoidal uncertainties',
     packages = find_packages(),
     install_requires=[
-        'gpytorch',
-        'tqdm',
+        'gpytorch==1.11',
     ],
 )
