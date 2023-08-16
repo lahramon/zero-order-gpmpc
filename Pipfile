@@ -5,6 +5,7 @@ name = "pypi"
 
 [packages]
 zero-order-gpmpc = {editable = true, path = "."}
+acados-template = {editable = true, path = "./acados/interfaces/acados_template"}
 
 [dev-packages]
 
