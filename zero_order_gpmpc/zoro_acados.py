@@ -24,9 +24,9 @@ class ZoroAcados():
     def __init__(self, ocp, sim, prob_x, Sigma_x0, Sigma_W, 
         B=None, 
         gp_model=None, 
-        use_model_params=True, 
         use_cython=True, 
         h_tightening_jac_sig_fun=None,
+        h_tightening_idx=[],
         path_json_ocp="zoro_sim_solver_config.json",
         path_json_sim="zoro_sim_solver_config.json"
     ):
@@ -36,9 +36,9 @@ class ZoroAcados():
         gp_model: GPyTorch GP model
         """
         # get dimensions
-        nx = ocp.model.x.size()[0]
-        nu = ocp.model.u.size()[0]
-        nparam = ocp.model.p.size()[0]
+        nx = ocp.dims.nx
+        nu = ocp.dims.nu
+        nparam = ocp.dims.np
         N = ocp.dims.N
         T = ocp.solver_options.tf
 
@@ -74,12 +74,15 @@ class ZoroAcados():
         # TODO: allow for more general model structures (other params than just vectorized covariances)
         if h_tightening_jac_sig_fun is None:
             # TODO: general solution (problem is concatenated paramteres in uncertain model, cannot compute jacobian w.r.t. subset of variables)
-            self.h_tightening_jac_sig_fun = generate_h_tighten_jac_sig_from_h_tighten(ocp.model.con_h_expr, ocp.model.x, ocp.model.u, ocp.model.p)
-        else:
-            self.h_tightening_jac_sig_fun = h_tightening_jac_sig_fun
+            h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(ocp.model.con_h_expr, ocp.model.x, ocp.model.u, ocp.model.p, h_tightening_idx)
+            self.h_tightening_jac_sig_fun = h_tighten_jac_sig_fun
+            # self.h_tightening_jac_sig_fun = generate_h_tighten_jac_sig_from_h_tighten(ocp.model.con_h_expr, ocp.model.x, ocp.model.u, ocp.model.p)
+        # else:
+        
+        self.h_tightening_jac_sig_fun = h_tightening_jac_sig_fun
 
         self.ocp = transform_ocp(ocp)
-        self.nparam_zoro = self.ocp.model.p.size()[0]
+        self.nparam_zoro = self.ocp.dims.np
         self.p_hat_model = np.zeros((N,self.nparam_model))
         self.p_hat_model_with_Pvec = np.zeros((N+1,self.nparam))
         self.p_hat_all = np.zeros((N,self.nparam_zoro))
