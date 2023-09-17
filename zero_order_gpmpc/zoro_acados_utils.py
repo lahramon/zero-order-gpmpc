@@ -5,6 +5,8 @@ import gpytorch
 import casadi as cas
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import norm
+from copy import deepcopy
 
 timings_names_default = [
     "build_lin_model",
@@ -72,7 +74,7 @@ def set_ocp_options(ocp, ocp_opts):
 def export_linear_model(x, u, p):
     nx = x.shape[0]
     nu = u.shape[0]
-    nparam = p.shape[0] if p else 0
+    nparam = p.shape[0] if isinstance(p,SX) else 0
 
     # linear dynamics for every stage
     A = SX.sym("A",nx,nx)
@@ -167,12 +169,17 @@ def sym_mat2vec(mat):
 
     if isinstance(mat, np.ndarray):
         i, j = np.triu_indices(nx, m=nx)
+        return mat[i,j]
     elif isinstance(mat, torch.Tensor):
         i, j = torch.triu_indices(nx, nx)
+        return mat[i,j]
+    elif isinstance(mat, cas.DM):
+        mat_np = np.array(mat)
+        i, j = np.triu_indices(nx, m=nx)
+        return cas.DM(mat_np[i,j])
     else:
         i, j = np.triu_indices(nx, m=nx)
-
-    return mat[i,j]
+        return mat[i,j]
 
 
 def vec2sym_mat(vec, nx):
@@ -332,7 +339,9 @@ def generate_gp_funs(gp_model, covar_jac=False, B=None):
     else:
         return gp_sensitivities
 
-def transform_ocp(ocp):
+def transform_ocp(ocp_input):
+    ocp = deepcopy(ocp_input)
+
     nx = ocp.dims.nx
     nu = ocp.dims.nu
     nparam = ocp.dims.np
@@ -343,6 +352,8 @@ def transform_ocp(ocp):
     model_lin.cost_expr_ext_cost = ocp.model.cost_expr_ext_cost
     model_lin.cost_expr_ext_cost_e = ocp.model.cost_expr_ext_cost_e
     ocp.model = model_lin
+    ocp.dims.np = model_lin.p.shape[0]
+    ocp.dims.nh = model_lin.con_h_expr.shape[0]
 
     ocp_parameter_values = ocp.parameter_values
     ocp.parameter_values = np.zeros((model_lin.p.shape[0],))
@@ -405,15 +416,15 @@ def generate_h_tightening_funs_SX(h, x, u, p, idh_tight):
     h_tighten_jac_x_fun = cas.Function("h_tighten_jac_x", [x,u,p_sig], [h_tighten_jac_x], fun_options)
     h_tighten_jac_sig_fun = cas.Function("h_tighten_jac_sig", [x,u,p_sig], [h_tighten_jac_sig], fun_options)
 
-    return h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun
+    return p_sig, h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun
 
 def only_upper_bounds_expr(h):
     h_only_upper = cas.vertcat(
         -h, # lower
-        h # uper
+        h # upper
     )
     idx_lh = np.arange(h.shape[0])
-    idx_uh = (len(idx_lh)-1) + idx_lh
+    idx_uh = len(idx_lh) + idx_lh
     return h_only_upper, idx_lh, idx_uh
 
 def tighten_model_constraints(model, idh_tight, prob_x):
@@ -422,11 +433,12 @@ def tighten_model_constraints(model, idh_tight, prob_x):
     u = model.u
     p = model.p
 
-    h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(h, x, u, p, idh_tight)
+    p_sig, h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(h, x, u, p, idh_tight)
+    model.p = p_sig
 
     prob_tighten = norm.ppf(prob_x)
     for ih in idh_tight:
-        model.con_h_expr[ih] = model.con_h_expr[ih] - prob_tighten * h_tighten_fun(x, u, p)[ih,:]
+        model.con_h_expr[ih] = model.con_h_expr[ih] - prob_tighten * h_tighten_fun(x, u, p_sig)[ih,:]
     
     return model, h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun
 

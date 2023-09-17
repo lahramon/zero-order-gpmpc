@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.15.0
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3.9.13 ('zero-order-gp-mpc-code-2CX1fffa')
 #     language: python
@@ -29,11 +29,7 @@ from dataclasses import dataclass
 
 import inverted_pendulum_model_acados
 importlib.reload(inverted_pendulum_model_acados)
-from inverted_pendulum_model_acados import export_simplependulum_ode_model, \
-export_ode_model_with_discrete_rk4, \
-export_robust_ode_model_with_constraints, \
-export_linear_model, \
-export_ocp_nominal
+from inverted_pendulum_model_acados import export_simplependulum_ode_model, export_ocp_nominal
 
 import utils
 importlib.reload(utils)
@@ -58,19 +54,8 @@ dT = T / N
 prob_x = 0.9
 prob_tighten = norm.ppf(prob_x)
 
-# cost
-cost_theta = 10
-cost_omega = 1
-cost_fac_e = 1
-Q = np.diagflat(np.array([cost_theta, cost_omega]))
-R = np.array(1)
-
 # constraints
 x0 = np.array([np.pi, 0])
-lb_u = -2.0
-ub_u = 2.0
-lb_theta = (0./360.) * 2 * np.pi
-ub_theta = (200./360.) * 2 * np.pi
 
 # noise
 # uncertainty dynamics
@@ -78,14 +63,14 @@ sigma_theta = (0.0001/360.) * 2 * np.pi
 sigma_omega = (0.0001/360.) * 2 * np.pi
 w_theta = 0.03
 w_omega = 0.03
-Sigma_x0 = cas.DM(np.array([
+Sigma_x0 = np.array([
     [sigma_theta**2,0],
     [0,sigma_omega**2]
-]))
-Sigma_W = cas.DM(np.array([
+])
+Sigma_W = np.array([
     [w_theta**2, 0],
     [0, w_omega**2]
-]))
+])
 
 # -
 
@@ -93,27 +78,13 @@ nx = 2
 nu = 1
 
 # +
-# integrator for nominal model
-sim = AcadosSim()
-
-sim.model = export_simplependulum_ode_model(noise=False)
-sim.solver_options.integrator_type = "ERK"
-# sim.parameter_values = np.zeros((nx,1))
-
-# set prediction horizon
-sim.solver_options.T = dT
-
-# acados_ocp_solver = AcadosOcpSolver(ocp_init, json_file = 'acados_ocp_' + model.name + '.json')
-acados_integrator = AcadosSimSolver(sim, json_file = 'acados_sim_' + sim.model.name + '.json')
-
-# +
-ocp_init = export_ocp_nominal(N,T)
-ocp_init.solver_options.integrator_type = "ERK"
-ocp_init.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
-ocp_init.solver_options.hessian_approx = "GAUSS_NEWTON"
+ocp_init = export_ocp_nominal(N,T,only_lower_bounds=True)
 ocp_init.solver_options.nlp_solver_type = "SQP"
 
 acados_ocp_init_solver = AcadosOcpSolver(ocp_init, json_file="acados_ocp_init_simplependulum_ode.json")
+# -
+
+ocp_init.dims.nh, ocp_init.model.con_h_expr, ocp_init.constraints.lh
 
 # +
 # get initial values
@@ -142,13 +113,14 @@ acados_ocp_init_solver.get_residuals()
 plt.plot(U_init)
 
 # +
+lb_theta = -ocp_init.constraints.lh[0]
 fig, ax = base_plot(lb_theta=lb_theta)
 
-plot_data = EllipsoidTubeData2D(
+plot_data_nom = EllipsoidTubeData2D(
     center_data = X_init,
     ellipsoid_data = None
 )
-add_plot_trajectory(ax, plot_data, prob_tighten=prob_tighten)
+add_plot_trajectory(ax, plot_data_nom, prob_tighten=prob_tighten)
 
 # +
 # without gp model
@@ -161,18 +133,76 @@ ocp_zoro_opts = {
     }
 }
 
-ocp_zoro_nogp = export_ocp_nominal(N, T)
+ocp_zoro_nogp = export_ocp_nominal(N, T, only_lower_bounds=True)
 ocp_zoro_nogp.solver_options.integrator_type = "DISCRETE"
 ocp_zoro_nogp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
 ocp_zoro_nogp.solver_options.hessian_approx = "GAUSS_NEWTON"
 ocp_zoro_nogp.solver_options.nlp_solver_type = "SQP_RTI"
+# -
+
+ocp_zoro_nogp.dims.nh
 
 # +
 # zoro_solver_nogp = ZoroAcados(ocp_zoro_nogp, sim, prob_x, Sigma_x0, Sigma_W+Sigma_GP_prior)
-from zero_order_gpmpc.zoro_acados_utils import generate_h_tightening_funs_SX
+from zero_order_gpmpc.zoro_acados_utils import generate_h_tightening_funs_SX, only_upper_bounds_expr, tighten_model_constraints
 
-idh_tight = [0]
-h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(ocp_zoro_nogp.model.con_h_expr, ocp_zoro_nogp.model.x, ocp_zoro_nogp.model.u, ocp_zoro_nogp.model.p, idh_tight)
+# make constraints one-sided
+ocp_model = export_simplependulum_ode_model(only_lower_bounds=True)
+
+# tighten constraints
+idh_tight = np.array([0]) # lower constraint on theta (theta >= 0)
+
+ocp_model_tightened, h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = tighten_model_constraints(ocp_model, idh_tight, prob_x)
+
+ocp_zoro_nogp.model = ocp_model_tightened
+ocp_zoro_nogp.dims.nh = ocp_model_tightened.con_h_expr.shape[0]
+ocp_zoro_nogp.dims.np = ocp_model_tightened.p.shape[0]
+ocp_zoro_nogp.parameter_values = np.zeros((ocp_zoro_nogp.dims.np,))
+
+# -
+
+ocp_zoro_nogp.model.con_h_expr, ocp_zoro_nogp.constraints.lh
+
+ocp_zoro_nogp.dims.nh
+
+# +
+# integrator for nominal model
+sim = AcadosSim()
+
+sim.model = ocp_zoro_nogp.model
+sim.parameter_values = ocp_zoro_nogp.parameter_values
+
+# set prediction horizon
+sim.solver_options.T = dT
+
+# acados_ocp_solver = AcadosOcpSolver(ocp_init, json_file = 'acados_ocp_' + model.name + '.json')
+acados_integrator = AcadosSimSolver(sim, json_file = 'acados_sim_' + sim.model.name + '.json')
+
+# +
+# h_only_upper, idx_lh, idx_uh = only_upper_bounds_expr(ocp_model.con_h_expr)
+
+# h_only_upper, idx_lh, idx_uh
+
+# lh = ocp_init.constraints.lh
+# uh = ocp_init.constraints.uh
+# inf_num = 1e6
+
+# lh_only_upper = np.ones((2*ocp_init.dims.nh,))*(-inf_num)
+# uh_only_upper = np.ones((2*ocp_init.dims.nh,))*inf_num
+
+# uh_only_upper[idx_uh] = uh
+# uh_only_upper[idx_lh] = -lh
+
+# lh_only_upper, uh_only_upper
+
+# +
+# idh_tight = [0]
+
+
+# h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(ocp_zoro_nogp.model.con_h_expr, ocp_zoro_nogp.model.x, ocp_zoro_nogp.model.u, ocp_zoro_nogp.model.p, idh_tight)
+
+
+# +
 
 zoro_solver_nogp = ZoroAcados(
     ocp_zoro_nogp, sim, prob_x, Sigma_x0, Sigma_W, 
@@ -183,6 +213,9 @@ for i in range(N):
     zoro_solver_nogp.ocp_solver.set(i, "x",X_init[i,:])
     zoro_solver_nogp.ocp_solver.set(i, "u",U_init[i,:])
 zoro_solver_nogp.ocp_solver.set(N, "x",X_init[N,:])
+# -
+
+h_tighten_fun
 
 # +
 zoro_solver_nogp.solve()
@@ -192,23 +225,9 @@ X_nogp,U_nogp,P_nogp = zoro_solver_nogp.get_solution()
 
 zoro_solver_nogp.solve_stats
 
-# +
-n_iter = zoro_solver_nogp.solve_stats["n_iter"]
-
-time_other = 0.0
-for key, t in zoro_solver_nogp.solve_stats["timings"].items():
-    if key != "total":
-        time_other -= t
-    else:
-        time_other += t
-    print(f"{key:20s}: {1000*t:8.3f}ms ({n_iter} calls), {1000*t/n_iter:8.3f}ms (1 call)")
-
-key = "other"
-t = time_other
-print(f"{key:20s}: {1000*t:8.3f}ms ({n_iter} calls), {1000*t/n_iter:8.3f}ms (1 call)")
-# -
-
 zoro_solver_nogp.print_solve_stats()
+
+1.26*np.sqrt(P_nogp[-1][0,0])
 
 # +
 
@@ -221,12 +240,13 @@ fig, ax = base_plot(lb_theta=lb_theta)
 # )
 # add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Reds)
 
-plot_data = EllipsoidTubeData2D(
+plot_data_nogp = EllipsoidTubeData2D(
     center_data = X_nogp,
     ellipsoid_data = np.array(P_nogp)
     # ellipsoid_data = None
 )
-add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Blues, prob_tighten=prob_tighten)
+add_plot_trajectory(ax, plot_data_nom, color_fun=plt.cm.Blues, prob_tighten=prob_tighten)
+add_plot_trajectory(ax, plot_data_nogp, color_fun=plt.cm.Oranges, prob_tighten=prob_tighten)
 
 # +
 # generate training data for GP with augmented model

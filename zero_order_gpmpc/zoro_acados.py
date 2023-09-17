@@ -48,6 +48,7 @@ class ZoroAcados():
         self.nparam_model = nparam - int((self.nx+1)*self.nx/2)
         self.N = N
         self.T = T
+        self.sim = sim
 
         # constants
         if B is None:
@@ -90,16 +91,16 @@ class ZoroAcados():
         self.p_hat_model_with_Pvec[0,:int((self.nx+1)*self.nx/2)] = self.P_bar_all_vec[0]
 
         if use_cython:
-            AcadosOcpSolver.generate(ocp, json_file = path_json_ocp)
-            AcadosOcpSolver.build(ocp.code_export_directory, with_cython=True)
+            AcadosOcpSolver.generate(self.ocp, json_file = path_json_ocp)
+            AcadosOcpSolver.build(self.ocp.code_export_directory, with_cython=True)
             self.ocp_solver = AcadosOcpSolver.create_cython_solver(path_json_ocp)
 
-            AcadosSimSolver.generate(sim, json_file = path_json_sim)
-            AcadosSimSolver.build(sim.code_export_directory, with_cython=True)
+            AcadosSimSolver.generate(self.sim, json_file = path_json_sim)
+            AcadosSimSolver.build(self.sim.code_export_directory, with_cython=True)
             self.sim_solver = AcadosSimSolver.create_cython_solver(path_json_sim)
         else:
-            self.ocp_solver = AcadosOcpSolver(ocp, json_file = path_json_ocp)
-            self.sim_solver = AcadosSimSolver(sim, json_file = path_json_sim)
+            self.ocp_solver = AcadosOcpSolver(self.ocp, json_file = path_json_ocp)
+            self.sim_solver = AcadosSimSolver(self.sim, json_file = path_json_sim)
         
         if gp_model is None:
             self.has_gp_model = False
@@ -261,7 +262,7 @@ class ZoroAcados():
                 time_get_backoffs_add = perf_counter()
                 tightening = htj_sig_matmul
 
-                lh = cas.DM(self.ocp.constraints.lh) + tightening 
+                lh = cas.DM(self.ocp.constraints.lh) #+ tightening 
 
                 time_now = perf_counter()
                 self.solve_stats["timings"]["get_backoffs_add"][i] = time_now - time_get_backoffs_add
