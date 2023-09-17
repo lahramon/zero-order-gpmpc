@@ -15,47 +15,43 @@
 # +
 import sys, os
 sys.path += ["../../"]
-# import dotenv
-import importlib
 
 import numpy as np
-# from numpy import linalg as npla
-from scipy.linalg import block_diag
 from scipy.stats import norm
 import casadi as cas
 from acados_template import AcadosOcp, AcadosSim, AcadosSimSolver, AcadosOcpSolver, AcadosOcpOptions
 import matplotlib.pyplot as plt
-from dataclasses import dataclass
+import torch
+import gpytorch
 
-import inverted_pendulum_model_acados
-importlib.reload(inverted_pendulum_model_acados)
+# zoRO imports
+from zero_order_gpmpc import ZoroAcados
 from inverted_pendulum_model_acados import export_simplependulum_ode_model, export_ocp_nominal
-
-import utils
-importlib.reload(utils)
 from utils import base_plot, add_plot_trajectory, EllipsoidTubeData2D
 
-import zero_order_gpmpc
-importlib.reload(zero_order_gpmpc)
-from zero_order_gpmpc import ZoroAcados
+# gpytorch_utils
+from gpytorch_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_at_inputs, train_gp_model
+from gpytorch_utils.gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
+from gpytorch_utils.gp_model import MultitaskGPModel, BatchIndependentMultitaskGPModel
 
-import zero_order_gpmpc.zoro_acados_utils as zero_order_gpmpc_utils
-importlib.reload(zero_order_gpmpc_utils)
 # -
 
 #
 
 # +
-# manual discretization
+# discretization
 N = 30
 T = 5
 dT = T / N
 
+# satisfaction probability for chance constraints
 prob_x = 0.9
 prob_tighten = norm.ppf(prob_x)
 
 # constraints
 x0 = np.array([np.pi, 0])
+nx = 2
+nu = 1
 
 # noise
 # uncertainty dynamics
@@ -72,19 +68,12 @@ Sigma_W = np.array([
     [0, w_omega**2]
 ])
 
-# -
-
-nx = 2
-nu = 1
 
 # +
 ocp_init = export_ocp_nominal(N,T,only_lower_bounds=True)
 ocp_init.solver_options.nlp_solver_type = "SQP"
 
 acados_ocp_init_solver = AcadosOcpSolver(ocp_init, json_file="acados_ocp_init_simplependulum_ode.json")
-# -
-
-ocp_init.dims.nh, ocp_init.model.con_h_expr, ocp_init.constraints.lh
 
 # +
 # get initial values
@@ -106,11 +95,6 @@ for i in range(N):
     U_init[i,:] = acados_ocp_init_solver.get(i, "u")
 
 X_init[N,:] = acados_ocp_init_solver.get(N, "x")
-# -
-
-acados_ocp_init_solver.get_residuals()
-
-plt.plot(U_init)
 
 # +
 lb_theta = -ocp_init.constraints.lh[0]
@@ -121,26 +105,14 @@ plot_data_nom = EllipsoidTubeData2D(
     ellipsoid_data = None
 )
 add_plot_trajectory(ax, plot_data_nom, prob_tighten=prob_tighten)
+# -
 
-# +
 # without gp model
-ocp_zoro_opts = {
-    "solver_options": {
-        "integrator_type": "DISCRETE",
-        "qp_solver": "PARTIAL_CONDENSING_HPIPM",
-        "hessian_approx": "GAUSS_NEWTON",
-        "nlp_solver_type": "SQP_RTI"
-    }
-}
-
 ocp_zoro_nogp = export_ocp_nominal(N, T, only_lower_bounds=True)
 ocp_zoro_nogp.solver_options.integrator_type = "DISCRETE"
 ocp_zoro_nogp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
 ocp_zoro_nogp.solver_options.hessian_approx = "GAUSS_NEWTON"
 ocp_zoro_nogp.solver_options.nlp_solver_type = "SQP_RTI"
-# -
-
-ocp_zoro_nogp.dims.nh
 
 # +
 # zoro_solver_nogp = ZoroAcados(ocp_zoro_nogp, sim, prob_x, Sigma_x0, Sigma_W+Sigma_GP_prior)
@@ -159,11 +131,6 @@ ocp_zoro_nogp.dims.nh = ocp_model_tightened.con_h_expr.shape[0]
 ocp_zoro_nogp.dims.np = ocp_model_tightened.p.shape[0]
 ocp_zoro_nogp.parameter_values = np.zeros((ocp_zoro_nogp.dims.np,))
 
-# -
-
-ocp_zoro_nogp.model.con_h_expr, ocp_zoro_nogp.constraints.lh
-
-ocp_zoro_nogp.dims.nh
 
 # +
 # integrator for nominal model
@@ -180,31 +147,7 @@ sim.solver_options.T = dT
 acados_integrator = AcadosSimSolver(sim, json_file = 'acados_sim_' + sim.model.name + '.json')
 
 # +
-# h_only_upper, idx_lh, idx_uh = only_upper_bounds_expr(ocp_model.con_h_expr)
-
-# h_only_upper, idx_lh, idx_uh
-
-# lh = ocp_init.constraints.lh
-# uh = ocp_init.constraints.uh
-# inf_num = 1e6
-
-# lh_only_upper = np.ones((2*ocp_init.dims.nh,))*(-inf_num)
-# uh_only_upper = np.ones((2*ocp_init.dims.nh,))*inf_num
-
-# uh_only_upper[idx_uh] = uh
-# uh_only_upper[idx_lh] = -lh
-
-# lh_only_upper, uh_only_upper
-
-# +
-# idh_tight = [0]
-
-
-# h_jac_x_fun, h_tighten_fun, h_tighten_jac_x_fun, h_tighten_jac_sig_fun = generate_h_tightening_funs_SX(ocp_zoro_nogp.model.con_h_expr, ocp_zoro_nogp.model.x, ocp_zoro_nogp.model.u, ocp_zoro_nogp.model.p, idh_tight)
-
-
-# +
-
+# solve with zoRO (no GP model, only process noise)
 zoro_solver_nogp = ZoroAcados(
     ocp_zoro_nogp, sim, prob_x, Sigma_x0, Sigma_W, 
     h_tightening_jac_sig_fun=h_tighten_jac_sig_fun
@@ -214,34 +157,12 @@ for i in range(N):
     zoro_solver_nogp.ocp_solver.set(i, "x",X_init[i,:])
     zoro_solver_nogp.ocp_solver.set(i, "u",U_init[i,:])
 zoro_solver_nogp.ocp_solver.set(N, "x",X_init[N,:])
-# -
 
-h_tighten_fun
-
-# +
 zoro_solver_nogp.solve()
-
 X_nogp,U_nogp,P_nogp = zoro_solver_nogp.get_solution()
-# -
-
-zoro_solver_nogp.solve_stats
-
-zoro_solver_nogp.print_solve_stats()
-
-X_nogp[-1,:]
-
-X_nogp[-1,:] - 1.26*np.sqrt(P_nogp[-1][0,0])
 
 # +
-
 fig, ax = base_plot(lb_theta=lb_theta)
-
-# plot_data = EllipsoidTubeData2D(
-#     center_data = X,
-#     ellipsoid_data = np.array(P)
-#     # ellipsoid_data = None
-# )
-# add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Reds)
 
 plot_data_nogp = EllipsoidTubeData2D(
     center_data = X_nogp,
@@ -255,12 +176,11 @@ add_plot_trajectory(ax, plot_data_nogp, color_fun=plt.cm.Oranges, prob_tighten=p
 # generate training data for GP with augmented model
 
 # "real model"
-model_actual = export_simplependulum_ode_model(noise=False) # TODO: Revert NOISE-FIX
+model_actual = export_simplependulum_ode_model()
 model_actual.f_expl_expr = model_actual.f_expl_expr + cas.vertcat(
     cas.DM(0),
     -0.5*cas.sin((model_actual.x[0])**2)
 )
-# model_actual.f_expl_expr = model_actual.f_expl_expr # EXACT MODEL (zero - GP) # TODO: Revert NOISE-FIX
 model_actual.f_impl_expr = model_actual.xdot - model_actual.f_expl_expr
 model_actual.name = model_actual.name + "_actual"
 
@@ -268,7 +188,6 @@ model_actual.name = model_actual.name + "_actual"
 sim_actual = AcadosSim()
 sim_actual.model = model_actual
 sim_actual.solver_options.integrator_type = "ERK"
-# sim.parameter_values = np.zeros((nx,1)) # TODO: Revert NOISE-FIX
 
 # set prediction horizon
 sim_actual.solver_options.T = dT
@@ -277,14 +196,7 @@ sim_actual.solver_options.T = dT
 acados_integrator_actual = AcadosSimSolver(sim_actual, json_file = 'acados_sim_' + model_actual.name + '.json')
 
 # +
-# from zero_order_gpmpc.zoro_acados_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
-# from gpytorch_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
-import gpytorch_utils.gp_hyperparam_training
-from gpytorch_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_at_inputs, generate_train_data_acados
-# importlib.reload(gp_hyperparam_training)
-# from gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
-
-random_seed = 817238
+random_seed = 123
 N_sim_per_x0 = 1
 N_x0 = 10
 x0_rand_scale = 0.1
@@ -306,21 +218,6 @@ y_train = generate_train_outputs_at_inputs(
 )
 
 # +
-import torch
-import gpytorch
-# import tqdm
-
-from gpytorch_utils.gp_model import MultitaskGPModel, BatchIndependentMultitaskGPModel
-# import gp_utils, gp_model
-# importlib.reload(gp_utils)
-# importlib.reload(gp_model)
-
-# from gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
-# from gp_hyperparam_training import train_gp_model, get_gp_param_names_values, set_gp_param_value
-# from gp_model imp
-# from gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
-
-
 x_train_tensor = torch.Tensor(x_train)
 y_train_tensor = torch.Tensor(y_train)
 nout = y_train.shape[1]
@@ -331,44 +228,16 @@ likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
 gp_model = BatchIndependentMultitaskGPModel(x_train_tensor, y_train_tensor, likelihood, nout)
 
 # +
-from gpytorch_utils.gp_hyperparam_training import train_gp_model
-
 training_iterations = 500
-rng_seed = 124145
-
-# set task covariance to identity
-# gp_model.likelihood.raw_noise.requires_grad = False
-# set_gp_param_value(gp_model, "likelihood.raw_noise", torch.Tensor([w_theta]))
-
-# gp_model.covar_module.task_covar_module.covar_factor.requires_grad = False
-# set_gp_param_value(gp_model, "covar_module.task_covar_module.covar_factor", torch.Tensor(np.eye(nx)))
-
-# # gp_model.covar_module.task_covar_module.raw_var.requires_grad = False
-# # set_gp_param_value(gp_model, "covar_module.task_covar_module.raw_var", torch.Tensor(np.array([0.1, 0.1])))
-# gp_model.covar_module.data_covar_module.raw_lengthscale.requires_grad = False
-# set_gp_param_value(gp_model, "covar_module.data_covar_module.raw_lengthscale", torch.Tensor(np.array([[1, 1]])))
-
-# gp_model.covar_module.data_covar_module.register_constraint("raw_lengthscale", gpytorch.constraints.Interval(0,10))
-# gp_model.covar_module.data_covar_module.register_constraint("raw_lengthscale", gpytorch.constraints.GreaterThan(0))
+rng_seed = 456
 
 gp_model, likelihood = train_gp_model(gp_model, torch_seed=rng_seed, training_iterations=training_iterations)
-
-# save GP model training
-# gp_model_train_dict = gp_model.state_dict().copy()
-# likelihood_train = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=nout)
-# gp_model_train = MultitaskGPModel(x_train_tensor, y_train_tensor, likelihood, nout, rank = nout)
-# gp_model_train.load_state_dict(gp_model_train_dict)
 
 # EVAL MODE
 gp_model.eval()
 likelihood.eval()
-# -
-
-gp_model.state_dict()
 
 # +
-from gpytorch_utils.gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
-
 num_samples = 5
 use_likelihood = False
 
@@ -423,11 +292,11 @@ plt.draw()
 # +
 from copy import deepcopy
 ocp_zoro = deepcopy(ocp_zoro_nogp)
-# zoro_solver = ZoroAcados(ocp_zoro, sim, prob_x, Sigma_x0, Sigma_W, gp_model=gp_model)
 
 zoro_solver = ZoroAcados(
     ocp_zoro, sim, prob_x, Sigma_x0, Sigma_W, 
-    h_tightening_jac_sig_fun=h_tighten_jac_sig_fun
+    h_tightening_jac_sig_fun=h_tighten_jac_sig_fun, 
+    gp_model=gp_model
 )
 
 for i in range(N):
@@ -435,42 +304,22 @@ for i in range(N):
     zoro_solver.ocp_solver.set(i, "u",U_init[i,:])
 zoro_solver.ocp_solver.set(N, "x",X_init[N,:])
 
-# +
-# initial condition
-# initialize nominal variables (initial guess)
-# for i in range(N):
-#     zoro_solver.ocp_solver.set(i, "x",X_init[i,:])
-#     zoro_solver.ocp_solver.set(i, "u",U_init[i,:])
-# zoro_solver.ocp_solver.set(N, "x",X_init[N,:])
-
 zoro_solver.solve()
-# -
-
-zoro_solver.print_solve_stats()
-
-# +
 X,U,P = zoro_solver.get_solution()
 
+# +
 fig, ax = base_plot(lb_theta=lb_theta)
 
-# plot_data = EllipsoidTubeData2D(
-#     center_data = simX_GP,
-#     ellipsoid_data = np.array(P_mat_list_GP)
-#     # ellipsoid_data = None
-# )
-# add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Oranges)
-
-plot_data = EllipsoidTubeData2D(
+plot_data_gp = EllipsoidTubeData2D(
     center_data = X,
     ellipsoid_data = np.array(P)
     # ellipsoid_data = None
 )
-add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Reds)
+add_plot_trajectory(ax, plot_data_nogp, color_fun=plt.cm.Oranges)
+add_plot_trajectory(ax, plot_data_gp, color_fun=plt.cm.Reds)
 
 # +
-# ocp_zoro_gpprior = export_ocp_nominal(N, T)
 ocp_zoro_gpprior = deepcopy(ocp_zoro_nogp)
-# ocp_zoro_gpprior = set_ocp_options(ocp_zoro_gpprior, ocp_zoro_opts)
 
 gp_model.eval()
 y_test = torch.Tensor(np.array([[1,1,1]]))
@@ -505,19 +354,10 @@ X_gpprior,U_gpprior,P_gpprior = zoro_solver_gpprior.get_solution()
 
 fig, ax = base_plot(lb_theta=lb_theta)
 
-plot_data = EllipsoidTubeData2D(
+plot_data_gpprior = EllipsoidTubeData2D(
     center_data = X_gpprior,
     ellipsoid_data = np.array(P_gpprior)
     # ellipsoid_data = None
 )
-add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Blues)
-
-plot_data = EllipsoidTubeData2D(
-    center_data = X,
-    ellipsoid_data = np.array(P)
-    # ellipsoid_data = None
-)
-add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Reds)
-# -
-
-
+add_plot_trajectory(ax, plot_data_gp, color_fun=plt.cm.Reds)
+add_plot_trajectory(ax, plot_data_gpprior, color_fun=plt.cm.Blues)
