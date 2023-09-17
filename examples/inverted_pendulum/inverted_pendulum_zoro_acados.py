@@ -171,6 +171,7 @@ sim = AcadosSim()
 
 sim.model = ocp_zoro_nogp.model
 sim.parameter_values = ocp_zoro_nogp.parameter_values
+sim.solver_options.integrator_type = "ERK"
 
 # set prediction horizon
 sim.solver_options.T = dT
@@ -227,7 +228,9 @@ zoro_solver_nogp.solve_stats
 
 zoro_solver_nogp.print_solve_stats()
 
-1.26*np.sqrt(P_nogp[-1][0,0])
+X_nogp[-1,:]
+
+X_nogp[-1,:] - 1.26*np.sqrt(P_nogp[-1][0,0])
 
 # +
 
@@ -268,50 +271,67 @@ sim_actual.solver_options.integrator_type = "ERK"
 # sim.parameter_values = np.zeros((nx,1)) # TODO: Revert NOISE-FIX
 
 # set prediction horizon
-sim_actual.solver_options.Tsim = dT
+sim_actual.solver_options.T = dT
 
 # acados_ocp_solver = AcadosOcpSolver(ocp, json_file = 'acados_ocp_' + model.name + '.json')
 acados_integrator_actual = AcadosSimSolver(sim_actual, json_file = 'acados_sim_' + model_actual.name + '.json')
 
 # +
-import gp_hyperparam_training
-importlib.reload(gp_hyperparam_training)
-from gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
+# from zero_order_gpmpc.zoro_acados_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
+# from gpytorch_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
+import gpytorch_utils.gp_hyperparam_training
+from gpytorch_utils.gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_at_inputs, generate_train_data_acados
+# importlib.reload(gp_hyperparam_training)
+# from gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
 
 random_seed = 817238
 N_sim_per_x0 = 1
 N_x0 = 10
 x0_rand_scale = 0.1
 
-x_train, x0_arr = generate_train_inputs_zoro(zoro_solver_nogp, x0, N_sim_per_x0, N_x0, random_seed=random_seed, x0_rand_scale=x0_rand_scale)
-y_train = generate_train_outputs_zoro(x_train, acados_integrator, acados_integrator_actual, Sigma_W)
+x_train, x0_arr = generate_train_inputs_zoro(
+    zoro_solver_nogp, 
+    x0, 
+    N_sim_per_x0, 
+    N_x0, 
+    random_seed=random_seed, 
+    x0_rand_scale=x0_rand_scale
+)
+
+y_train = generate_train_outputs_at_inputs(
+    x_train, 
+    acados_integrator, 
+    acados_integrator_actual, 
+    Sigma_W
+)
 
 # +
 import torch
 import gpytorch
-import tqdm
+# import tqdm
 
-import gp_utils, gp_model
-importlib.reload(gp_utils)
-importlib.reload(gp_model)
+from gpytorch_utils.gp_model import MultitaskGPModel, BatchIndependentMultitaskGPModel
+# import gp_utils, gp_model
+# importlib.reload(gp_utils)
+# importlib.reload(gp_model)
 
-from gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
-from gp_hyperparam_training import train_gp_model, get_gp_param_names_values, set_gp_param_value
-from gp_model import IndependentGPModel, MultitaskGPModel
+# from gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
+# from gp_hyperparam_training import train_gp_model, get_gp_param_names_values, set_gp_param_value
+# from gp_model imp
+# from gp_hyperparam_training import generate_train_inputs_zoro, generate_train_outputs_zoro, train_gp_model, get_gp_param_names_values, set_gp_param_value
 
-nout = nx
 
 x_train_tensor = torch.Tensor(x_train)
 y_train_tensor = torch.Tensor(y_train)
+nout = y_train.shape[1]
 
 likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(
     num_tasks = nout
 )
-gp_model = MultitaskGPModel(x_train_tensor, y_train_tensor, likelihood, nout, rank = nout)
-
-list(get_gp_param_names_values(gp_model))
+gp_model = BatchIndependentMultitaskGPModel(x_train_tensor, y_train_tensor, likelihood, nout)
 
 # +
+from gpytorch_utils.gp_hyperparam_training import train_gp_model
 
 training_iterations = 500
 rng_seed = 124145
@@ -344,11 +364,11 @@ gp_model.eval()
 likelihood.eval()
 # -
 
-list(get_gp_param_names_values(gp_model))
-
 gp_model.state_dict()
 
 # +
+from gpytorch_utils.gp_utils import gp_data_from_model_and_path, gp_derivative_data_from_model_and_path, plot_gp_data, generate_grid_points
+
 num_samples = 5
 use_likelihood = False
 
@@ -362,7 +382,7 @@ x_plot_waypts = np.hstack((
 x_plot = []
 for i in range(x_plot_waypts.shape[0]-1):
     x_plot += [x_plot_waypts[i,:] + (x_plot_waypts[i+1,:] - x_plot_waypts[i,:]) * t for t in t_lin]
-x_plot = np.vstack(zip(x_plot))
+x_plot = np.vstack(x_plot)
 
 gp_data = gp_data_from_model_and_path(gp_model, likelihood, x_plot, num_samples=num_samples, use_likelihood=use_likelihood)
 plot_gp_data([gp_data], marker_size_lim=[1, 15])
@@ -399,18 +419,29 @@ fig, ax = plot_gp_data([gp_derivative_grid_data], marker_size_lim=[5, 50], plot_
 ax[0].set_ylim(*y_lim_0)
 ax[1].set_ylim(*y_lim_1)
 plt.draw()
-# -
-
-ocp_zoro = export_ocp_nominal(N, T)
-zoro_solver = ZoroAcados(ocp_zoro, sim, prob_x, Sigma_x0, Sigma_W, gp_model=gp_model)
 
 # +
-# initial condition
-# initialize nominal variables (initial guess)
+from copy import deepcopy
+ocp_zoro = deepcopy(ocp_zoro_nogp)
+# zoro_solver = ZoroAcados(ocp_zoro, sim, prob_x, Sigma_x0, Sigma_W, gp_model=gp_model)
+
+zoro_solver = ZoroAcados(
+    ocp_zoro, sim, prob_x, Sigma_x0, Sigma_W, 
+    h_tightening_jac_sig_fun=h_tighten_jac_sig_fun
+)
+
 for i in range(N):
     zoro_solver.ocp_solver.set(i, "x",X_init[i,:])
     zoro_solver.ocp_solver.set(i, "u",U_init[i,:])
 zoro_solver.ocp_solver.set(N, "x",X_init[N,:])
+
+# +
+# initial condition
+# initialize nominal variables (initial guess)
+# for i in range(N):
+#     zoro_solver.ocp_solver.set(i, "x",X_init[i,:])
+#     zoro_solver.ocp_solver.set(i, "u",U_init[i,:])
+# zoro_solver.ocp_solver.set(N, "x",X_init[N,:])
 
 zoro_solver.solve()
 # -
@@ -437,13 +468,15 @@ plot_data = EllipsoidTubeData2D(
 add_plot_trajectory(ax, plot_data, color_fun=plt.cm.Reds)
 
 # +
-ocp_zoro_gpprior = export_ocp_nominal(N, T)
-ocp_zoro_gpprior = set_ocp_options(ocp_zoro_gpprior, ocp_zoro_opts)
+# ocp_zoro_gpprior = export_ocp_nominal(N, T)
+ocp_zoro_gpprior = deepcopy(ocp_zoro_nogp)
+# ocp_zoro_gpprior = set_ocp_options(ocp_zoro_gpprior, ocp_zoro_opts)
 
 gp_model.eval()
 y_test = torch.Tensor(np.array([[1,1,1]]))
 Sigma_GP_prior = gp_model.covar_module(y_test).numpy()
 
+Sigma_GP_prior = np.diag(Sigma_GP_prior.flatten())
 Sigma_GP_prior
 # -
 
@@ -452,7 +485,11 @@ Sigma_W
 Sigma_W+Sigma_GP_prior
 
 # +
-zoro_solver_gpprior = ZoroAcados(ocp_zoro_gpprior, sim, prob_x, Sigma_x0, Sigma_W+Sigma_GP_prior)
+# zoro_solver_gpprior = ZoroAcados(ocp_zoro_gpprior, sim, prob_x, Sigma_x0, Sigma_W+Sigma_GP_prior)
+zoro_solver_gpprior = ZoroAcados(
+    ocp_zoro_gpprior, sim, prob_x, Sigma_x0, Sigma_W+Sigma_GP_prior, 
+    h_tightening_jac_sig_fun=h_tighten_jac_sig_fun
+)
 
 for i in range(N):
     zoro_solver_gpprior.ocp_solver.set(i, "x",X_init[i,:])
