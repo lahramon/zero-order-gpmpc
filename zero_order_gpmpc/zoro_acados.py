@@ -262,7 +262,7 @@ class ZoroAcados():
                 time_get_backoffs_add = perf_counter()
                 tightening = htj_sig_matmul
 
-                lh = cas.DM(self.ocp.constraints.lh) #+ tightening 
+                lh = cas.DM(self.ocp.constraints.lh) + tightening 
 
                 time_now = perf_counter()
                 self.solve_stats["timings"]["get_backoffs_add"][i] = time_now - time_get_backoffs_add
