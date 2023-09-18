@@ -392,7 +392,7 @@ def generate_h_tightening_funs_SX(h, x, u, p, idh_tight):
     # dims
     nx = x.shape[0]
     nu = u.shape[0]
-    np = p.shape[0] if p else 0
+    np = p.shape[0] if isinstance(p,cas.SX) else 0
     nh = h.shape[0]
 
     # variables for uncertainty and gradients
