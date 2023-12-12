@@ -53,6 +53,10 @@ This software is built upon the results of the article "Zero-Order Optimization 
     ```
     > At the first execution, you might be asked by `acados` to install `tera_renderer`.
 
+## Examples
+
+You can find an example implementation of the zero-order GP-MPC method [here]().
+
 ## Citing us
 
 If you find this software useful, please consider citing our corresponding article as written below.
