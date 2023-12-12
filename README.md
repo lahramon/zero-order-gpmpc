@@ -1,9 +1,11 @@
 # Zero-Order GP-MPC
 
 An efficient implementation of a tailored SQP method for learning-based model predictive control with ellipsoidal uncertainties,
+
 - using the `acados` Python interface to solve the optimal control problems, and
 - employing `PyTorch` to evaluate learning-based dynamics models (neural networks, Gaussian processes, ...) with support for GPU acceleration,
-by modifying the Jacobians inside the SQP loop.
+
+by modifying the Jacobians inside the SQP loop directly.
 
 ## Background
 
