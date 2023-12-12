@@ -55,7 +55,7 @@ This software is built upon the results of the article "Zero-Order Optimization 
 
 ## Examples
 
-You can find an example implementation of the zero-order GP-MPC method [here]().
+You can find an example implementation of the zero-order GP-MPC method [here](https://github.com/lahramon/zero-order-gpmpc/blob/main/examples/inverted_pendulum/inverted_pendulum_zoro_acados.ipynb).
 
 ## Citing us
 
