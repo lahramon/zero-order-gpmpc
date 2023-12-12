@@ -14,8 +14,6 @@ This software is built upon the results of the article "Zero-Order Optimization 
 
 ## Installation instructions
 
-### 
-
 1. Clone this repository.
     ```bash
         git clone https://github.com/lahramon/zero-order-gpmpc.git
@@ -49,12 +47,6 @@ This software is built upon the results of the article "Zero-Order Optimization 
             ACADOS_SOURCE_DIR=<yourpath>/zero-order-gpmpc/acados
             LD_LIBRARY_PATH=<yourpath>/zero-order-gpmpc/acados/lib
         ```
-3. Run example:
-    ```bash
-        cd exp/hanging_chain/
-        python main.py
-    ```
-    > At the first execution, you might be asked by `acados` to install `tera_renderer`.
 
 ## Examples
 
