@@ -3,7 +3,8 @@
 An efficient implementation of a tailored SQP method for learning-based model predictive control with ellipsoidal uncertainties,
 
 - using the `acados` Python interface to solve the optimal control problems, and
-- employing `PyTorch` to evaluate learning-based dynamics models (neural networks, Gaussian processes, ...) with support for GPU acceleration,
+- employing `PyTorch` to evaluate Gaussian process dynamics models with support for GPU acceleration,
+- efficiently handling the optimization over the posterior covariances of the GP inside the optimizer,
 
 by modifying the Jacobians inside the SQP loop directly.
 
