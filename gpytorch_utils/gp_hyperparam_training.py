@@ -207,45 +207,6 @@ def get_gp_param_names_values(gp_model):
         values += [get_gp_param_value(gp_model, name)]
     return zip(names, values)
 
-if __name__ == "__main__":
-    N_sim = 25
-    N_x0 = 50
-    sim_data_array = generate_train_data(N_sim, N_x0, plot=False)
-    train_model_corrections = True
-    
-    # rng seeds
-    torch.manual_seed(20220108)
-    
-    # loop through sim_array and generate x and y data
-    train_x, train_y = simdata_to_torch(sim_data_array)
-
-    # train GP model
-    gp_model, likelihood = train_gp_model(train_x, train_y)
-
-    # plot along single axis
-    gp_dim_lims = np.array([
-        [0, 2],
-        [0.0, 1.0],
-        [0.0, 1.0]
-    ])
-    gp_dim_slice = np.array([
-        0.9,
-        0.3,
-        0.5
-    ])
-
-    # along which dim to plot (in gp_dim_lims[dim], other values fixed to gp_dim_slice[other_dims])
-    gp_dim_plot = 1
-    gp_dim_fix = np.arange(len(gp_dim_slice)) # [0,1,2] #.remove(gp_dim_plot)
-    gp_dim_loop = 2
-
-    gp_out_lims = np.array([
-        [-0.15, 0.05],
-        [-0.5, 0.5]
-    ])
-
-    plot_gp_model(gp_model, likelihood, gp_dim_lims, gp_dim_slice, gp_dim_plot, gp_dim_loop, gp_out_lims)
-
 def get_prior_covariance(gp_model):
 
     dim = gp_model.train_inputs[0].shape[1]
