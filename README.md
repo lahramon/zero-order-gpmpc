@@ -1,3 +1,7 @@
+> This repository has been superseded by [L4acados](https://github.com/IntelligentControlSystems/l4acados), which contains an improved zero-order GP-MPC implementation.
+
+------
+
 # Zero-Order GP-MPC
 
 An efficient implementation of a tailored SQP method for learning-based model predictive control with ellipsoidal uncertainties,
